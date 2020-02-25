@@ -14,7 +14,7 @@ import io
 
 __progname__ = 'TLSR826x ComSwireWriter Utility'
 __filename__ = 'ComSwireWriter'
-__version__ = "21.02.20"
+__version__ = "25.02.20"
 
 class FatalError(RuntimeError):
 	def __init__(self, message):
@@ -96,7 +96,6 @@ def main():
 		print ('Error: Open %s, %d baud!' % (args.port, args.baud))
 		sys.exit(1)
 	#--------------------------------
-	args.file = 'floader.bin'
 	try:
 		stream = open(args.file, 'rb')
 		size = os.path.getsize(args.file)
@@ -115,13 +114,11 @@ def main():
 	# RTS = either RESET (active low = chip in reset)
 	# DTR = active low
 	print('Reset module (RTS low)...')
-	serialPort.setDTR(False)
+	serialPort.setDTR(True)
 	serialPort.setRTS(True)
 	time.sleep(0.05)
-	serialPort.setDTR(True)
-	serialPort.setRTS(False)
-	time.sleep(0.05)
 	serialPort.setDTR(False)
+	serialPort.setRTS(False)
 	#--------------------------------
     # Stop CPU|: [0x0602]=5
 	print('Activate (%d ms)...' % args.tact)
@@ -139,7 +136,7 @@ def main():
 		continue
 	#--------------------------------
 	# Set SWS speed low: [0x00b2]=50
-	byteSent = serialPort.write(sws_wr_addr(0x00b2, [10]))
+	byteSent = serialPort.write(sws_wr_addr(0x00b2, [45]))
 	read = serialPort.read(byteSent+33)
 	byteRead = len(read)
 	if byteRead != byteSent:
@@ -149,14 +146,12 @@ def main():
 	#--------------------------------
 	# Test read bytes [0x00b2]
 	byteSent += serialPort.write(sws_rd_addr(0x00b2))
-	read = serialPort.read(byteSent-byteRead+33)
-	byteRead += len(read)
 	# start read
 	byteSent += serialPort.write([0xff])
-	read = serialPort.read(10)
+	read = serialPort.read(byteSent-byteRead+33)
 	byteRead += len(read)
 	if byteRead <= byteSent:
-		print('Warning: no connection to the module!')		
+		print('Warning: Pin RX no connection to the module?')		
 		warn += 1
 	else:
 		print('Connection...')		
