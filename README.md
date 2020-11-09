@@ -1,10 +1,10 @@
 # TlsrComSwireWriter
-TLSR826x COM port Swire Writer Utility
+TLSR826x/825x COM port Swire Writer Utility
 
 
 ### Telink SWIRE simulation on a COM port.
 
-Using only the COM port, downloads and runs the program in SRAM for TLSR826x chips.
+Using only the COM port, downloads and runs the program in SRAM for TLSR826x or TLSR825x chips.
 
 ![SCH](https://github.com/pvvx/TlsrComSwireWriter/blob/master/schematicc.gif)
 
