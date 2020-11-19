@@ -7,6 +7,7 @@ TLSR826x/825x COM port Swire Writer Utility
 Using only the COM port, downloads and runs the program in SRAM for TLSR826x or TLSR825x chips.
 
 ![SCH](https://github.com/pvvx/TlsrComSwireWriter/blob/master/schematicc.gif)
+COM-RTS connect to Chip RST or Vcc.
 
 
     usage: ComSwireWriter [-h] [--port PORT] [--tact TACT] [--file FILE] [--baud BAUD]

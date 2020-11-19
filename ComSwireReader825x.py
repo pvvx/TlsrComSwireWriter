@@ -132,7 +132,7 @@ def set_sws_speed(serialPort, clk):
 		return True
 	#--------------------------------
 	# Set default register[0x00b2]
-	serialPort.read(serialPort.write(sws_wr_addr(0x00b2, 5)))
+	serialPort.read(serialPort.write(sws_wr_addr(0x00b2, 0x05)))
 	print('no')
 	return False
 def main():
@@ -203,7 +203,7 @@ def main():
     	# Stop CPU|: [0x0602]=5
 		print('Activate (%d ms)...' % args.tact)
 		tact = args.tact/1000.0
-		blk = sws_wr_addr(0x0602, bytearray([5]))
+		blk = sws_wr_addr(0x0602, 0x05)
 		byteSent = serialPort.write(blk)
 		if args.tact != 0:
 			t1 = time.time()
@@ -227,6 +227,7 @@ def main():
 			if not set_sws_speed(serialPort, 24000000):
 				if not set_sws_speed(serialPort, 32000000):
 					if not set_sws_speed(serialPort, 48000000):
+						print('Chip sleep? -> Use reset chip (RTS-RST): see option --tact')
 						sys.exit(1)
 	print('-------------------------------------------------------')
 	# print('Connection...')
@@ -235,7 +236,7 @@ def main():
 	x = sws_read_data(serialPort, args.address, args.size)
 	#--------------------------------
 	# Set default register[0x00b2]
-	# serialPort.read(serialPort.write(sws_wr_addr(0x00b2, 5)))
+	# serialPort.read(serialPort.write(sws_wr_addr(0x00b2, 0x05)))
 	# print('------------------------------------------------')
 	if x != None:
 		addr = args.address

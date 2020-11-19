@@ -81,6 +81,7 @@ def main():
 		default=230400)
 	
 	args = parser.parse_args()
+	print('================================================')
 	print('%s version %s' % (__progname__, __version__))
 	print('------------------------------------------------')
 	print ('Open %s, %d baud...' % (args.port, args.baud))
@@ -131,7 +132,7 @@ def main():
 			for i in range(5):
 				byteSent +=	serialPort.write(blk)
 			serialPort.reset_input_buffer()
-	time.sleep(byteSent*12/args.baud - tact)
+	time.sleep(byteSent*12/args.baud)
 	while len(serialPort.read(1000)):
 		continue
 	#--------------------------------
