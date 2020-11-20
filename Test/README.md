@@ -14,7 +14,9 @@ Low polling speed when reading the USB COM port on some chips - 3 ms per byte.
 
 An incomplete example is attached.
 
-Tested on Prolific PL-2303HX USB-COM chip
+Tested on Prolific PL-2303HX USB-COM chip:
+
+![PL2303HXBAUD](https://github.com/pvvx/TlsrComSwireWriter/blob/master/Test/PL2303HX_baud.gif)
 
 
 #### Samples:
