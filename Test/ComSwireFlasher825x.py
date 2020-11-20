@@ -55,7 +55,7 @@ def hex_dump(addr, blk):
 		if (i+1) % 16 == 0:
 			print('%02x ' % blk[i])
 			if i < len(blk) - 1:
-				print('%06x: ' % (addr + i), end='')
+				print('%06x: ' % (addr + i + 1), end='')
 		else:
 			print('%02x ' % blk[i], end='')
 	if len(blk) % 16 != 0:
