@@ -16,14 +16,16 @@ __progname__ = 'TLSR825x ComSwireReader Utility'
 __filename__ = 'ComSwireReader'
 __version__ = "20.11.20"
 
-COMPORT_MIN_BAUD_RATE=460800
+COMPORT_MIN_BAUD_RATE=340000
 COMPORT_DEF_BAUD_RATE=921600
 USBCOMPORT_BAD_BAUD_RATE=700000
+
+debug = False
+bit8mask = 0x20
 
 class FatalError(RuntimeError):
 	def __init__(self, message):
 		RuntimeError.__init__(self, message)
-
 	@staticmethod
 	def WithResult(message, result):
 		message += " (result was %s)" % hexify(result)
@@ -63,11 +65,13 @@ def sws_encode_blk(blk):
 # decode 9 bit swire response to byte (blk)
 def sws_decode_blk(blk):
 	if (len(blk) == 9) and ((blk[8] & 0xfe) == 0xfe):
+		bitmask = bit8mask
 		data = 0;
 		for el in range(8):
 			data <<= 1
-			if (blk[el] & 0x20) == 0:
+			if (blk[el] & bitmask) == 0:
 				data |= 1
+			bitmask = 0x10
 		#print('0x%02x' % data)
 		return data
 	#print('Error blk:', blk)
@@ -117,10 +121,17 @@ def sws_read_data(serialPort, addr, size):
 		# send bit start read byte
 		serialPort.write([0xfe])
 		# read 9 bits swire, decode read byte
-		x = sws_decode_blk(serialPort.read(9))
+		blk = serialPort.read(9)
+		# Added retry reading for Prolific PL-2303HX and ...
+		if len(blk) < 9:
+			blk += serialPort.read(9-len(blk))
+		x = sws_decode_blk(blk)
 		if x != None:
 			out += [x]
 		else:
+			if debug:
+				print('\r\nDebug: read swire byte:')
+				hex_dump(addr+i, blk)
 			# send stop read
 			rd_wr_usbcom_blk(serialPort, sws_code_end())
 			out = None
@@ -132,21 +143,24 @@ def sws_read_data(serialPort, addr, size):
 def set_sws_speed(serialPort, clk):
 	#--------------------------------
 	# Set register[0x00b2]
-	swsdiv = int(round(clk*2/serialPort.baudrate))
-	byteSent = sws_wr_addr_usbcom(serialPort, 0x00b2, [swsdiv])
 	print('SWire speed for CLK %.1f MHz... ' % (clk/1000000), end='')
+	swsdiv = int(round(clk*2/serialPort.baudrate))
+	if swsdiv > 0x7f:
+		print('Low UART baud rate!')
+		return False
+	byteSent = sws_wr_addr_usbcom(serialPort, 0x00b2, [swsdiv])
 	# print('Test SWM/SWS %d/%d baud...' % (int(serialPort.baudrate/5),int(clk/5/swsbaud)))
 	read = serialPort.read(byteSent)
 	if len(read) != byteSent:
 		if serialPort.baudrate > USBCOMPORT_BAD_BAUD_RATE and byteSent > 64 and len(read) >= 64 and len(read) < byteSent:
-			print('!!!!!!!!!!!!!!!!!!!BAD USB-UART Chip!!!!!!!!!!!!!!!!!!!')
+			print('\n\r!!!!!!!!!!!!!!!!!!!BAD USB-UART Chip!!!!!!!!!!!!!!!!!!!')
 			print('UART Output:')
 			hex_dump(0,sws_wr_addr(0x00b2, [swsdiv]))
 			print('UART Input:')
 			hex_dump(0,read)
 			print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
 			return False
-		print('\rError: Wrong RX-TX connection!')
+		print('\n\rError: Wrong RX-TX connection!')
 		return False
 	#--------------------------------
 	# Test read register[0x00b2]
@@ -154,8 +168,9 @@ def set_sws_speed(serialPort, clk):
 	#print(x)
 	if x != None and x[0] == swsdiv:
 		print('ok.')
-		#print('Chip CLK %d MHz, regs[0x0b2]=0x%02x' % (clk/1000000, swsbaud))
-		#print('regs[0x0b2]:0x%02x' % x[0])
+		if debug:
+			print('Debug: UART-SWS %d baud. SW-CLK ~%.1f MHz' % (int(serialPort.baudrate/10), serialPort.baudrate*swsdiv/2000000))
+			print('Debug: swdiv = 0x%02x' % (swsdiv))
 		return True
 	#--------------------------------
 	# Set default register[0x00b2]
@@ -173,11 +188,17 @@ def set_sws_auto_speed(serialPort):
 	# serialPort.baudrate = 460800..3000000 bits/s
 	# register[0x00b2] = swsdiv = 10..208
 	#---------------------------------------------------
-	swsdiv = int(round(24000000*2/serialPort.baudrate))
-	#print('default swdiv = %d (0x%02x)' % (swsdiv,swsdiv)) # debug
 	serialPort.timeout = 0.01 # A serialPort.timeout must be set !
+	if debug:
+		swsdiv_def = int(round(24000000*2/serialPort.baudrate))
+		print('Debug: default swdiv for 24 MHz = %d (0x%02x)' % (swsdiv_def, swsdiv_def))
 	swsdiv = int(round(16000000*2/serialPort.baudrate))
+	if swsdiv > 0x7f:
+		print('Low UART baud rate!')
+		return False
 	swsdiv_max = int(round(48000000*2/serialPort.baudrate))
+	#bit8m = (bit8mask + (bit8mask<<1) + (bit8mask<<2))&0xff
+	bit8m = ((~(bit8mask-1))<<1)&0xff
 	while swsdiv <= swsdiv_max:
 		# register[0x00b2] = swsdiv
 		rd_sws_wr_addr_usbcom(serialPort, 0x00b2, [swsdiv])
@@ -186,18 +207,27 @@ def set_sws_auto_speed(serialPort):
 		# start read data
 		serialPort.write([0xfe])
 		# read 9 bits data
-		blk = serialPort.read(50)
+		blk = serialPort.read(9)
+		# Added retry reading for Prolific PL-2303HX and ...
+		if len(blk) < 9:
+			blk += serialPort.read(9-len(blk))
 		# send stop read
 		rd_wr_usbcom_blk(serialPort, sws_code_end())
-		#hex_dump(swsdiv, blk) # debug
-		if len(blk) == 9 and blk[8] == 0xfe and (blk[0]&0xe0) == 0xe0:
+		if debug:
+			print('Debug (read data):')
+			hex_dump(swsdiv, blk)
+		if len(blk) == 9 and blk[8] == 0xfe:
 			cmp = sws_encode_blk([swsdiv])
-			#print('info') # debug
-			#hex_dump(swsdiv+0xccc00, sws_encode_blk([swsdiv])) # debug
-			if blk[1] == cmp[2] and blk[2] == cmp[3] and blk[4] == cmp[5] and blk[6] == cmp[7] and blk[7] == cmp[8]:
+			if debug:
+				print('Debug (check data):')
+				hex_dump(swsdiv+0xccc00, sws_encode_blk([swsdiv]))
+			if (blk[0]&bit8m) == bit8m and blk[1] == cmp[2] and blk[2] == cmp[3] and blk[4] == cmp[5] and blk[6] == cmp[7] and blk[7] == cmp[8]:
 				print('UART-SWS %d baud. SW-CLK ~%.1f MHz(?)' % (int(serialPort.baudrate/10), serialPort.baudrate*swsdiv/2000000))
 				return True
 		swsdiv += 1
+		if swsdiv > 0x7f:
+			print('Low UART baud rate!')
+			break
 	#--------------------------------
 	# Set default register[0x00b2]
 	rd_sws_wr_addr_usbcom(serialPort, 0x00b2, 0x05)
@@ -271,8 +301,19 @@ def main():
 		help='Size data (default: 4)', 
 		type=arg_auto_int, 
 		default=4)
+	parser.add_argument(
+		'--debug','-d', 
+		help='Debug info', 
+		action="store_true")
 	
 	args = parser.parse_args()
+	global debug
+	debug = args.debug
+	global bit8mask
+	if args.baud > 1000000:
+		bit8mask = 0x40
+		if args.baud > 3000000:
+			bit8mask = 0x80
 	print('=======================================================')
 	print('%s version %s' % (__progname__, __version__))
 	print('-------------------------------------------------------')
@@ -289,7 +330,6 @@ def main():
 #		serialPort.flushInput()
 #		serialPort.flushOutput()
 		serialPort.timeout = 0.05
-#		print('serialPort.timeout =', serialPort.timeout)
 	except:
 		print ('Error: Open %s, %d baud!' % (args.port, args.baud))
 		sys.exit(1)
@@ -302,8 +342,7 @@ def main():
 			print('Chip sleep? -> Use reset chip (RTS-RST): see option --tact')
 			sys.exit(1)
 	else:
-		# Set SWS speed low
-		# SWS Speed = CLK/5/[0xb2] bits/s
+		# Set SWS Speed = CLK/5/[0xb2] bits/s 
 		if not set_sws_speed(serialPort, args.clk * 1000000):
 			if not set_sws_speed(serialPort, 16000000):
 				if not set_sws_speed(serialPort, 24000000):
@@ -313,6 +352,7 @@ def main():
 							sys.exit(1)
 	print('-------------------------------------------------------')
 	# print('Connection...')
+	serialPort.timeout = 0.05 # A serialPort.timeout must be set !
 	#--------------------------------
 	# Read swire addres[size]
 	blk = sws_read_data(serialPort, args.address, args.size)
@@ -325,7 +365,7 @@ def main():
 		print('-------------------------------------------------------')
 		print('Done!')
 		sys.exit(0)
-	print('Error!')
+	print('Read data Error!')
 	sys.exit(1)
  
 if __name__ == '__main__':
