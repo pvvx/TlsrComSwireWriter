@@ -18,7 +18,7 @@ __version__ = "20.11.20"
 
 COMPORT_MIN_BAUD_RATE=340000
 COMPORT_DEF_BAUD_RATE=921600
-USBCOMPORT_BAD_BAUD_RATE=700000
+USBCOMPORT_BAD_BAUD_RATE=11700000
 
 debug = False
 bit8mask = 0x20
@@ -124,7 +124,7 @@ def sws_read_data(serialPort, addr, size):
 		blk = serialPort.read(9)
 		# Added retry reading for Prolific PL-2303HX and ...
 		if len(blk) < 9:
-			blk += serialPort.read(9-len(blk))
+			blk += serialPort.read(10-len(blk))
 		x = sws_decode_blk(blk)
 		if x != None:
 			out += [x]
@@ -198,7 +198,7 @@ def set_sws_auto_speed(serialPort):
 		return False
 	swsdiv_max = int(round(48000000*2/serialPort.baudrate))
 	#bit8m = (bit8mask + (bit8mask<<1) + (bit8mask<<2))&0xff
-	bit8m = ((~(bit8mask-1))<<1)&0xff
+	bit8m = 0x80 #((~(bit8mask-1))<<1)&0xff
 	while swsdiv <= swsdiv_max:
 		# register[0x00b2] = swsdiv
 		rd_sws_wr_addr_usbcom(serialPort, 0x00b2, [swsdiv])
@@ -322,10 +322,7 @@ def main():
 		sys.exit(1)
 	print ('Open %s, %d baud...' % (args.port, args.baud))
 	try:
-		serialPort = serial.Serial(args.port, args.baud, \
-								   serial.EIGHTBITS,\
-								   serial.PARITY_NONE, \
-								   serial.STOPBITS_ONE)
+		serialPort = serial.Serial(args.port,args.baud)
 		serialPort.reset_input_buffer()
 #		serialPort.flushInput()
 #		serialPort.flushOutput()

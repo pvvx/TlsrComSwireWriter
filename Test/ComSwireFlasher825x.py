@@ -14,7 +14,7 @@ import io
 
 __progname__ = 'TLSR825x ComSwireFlasher Utility'
 __filename__ = 'ComSwireFlasher'
-__version__ = "19.11.20(test)"
+__version__ = "20.11.20(test)"
 
 #typedef struct {		// Start values:
 #	volatile u32 faddr; //[+0] = flash jedec id
@@ -37,18 +37,24 @@ class floader_ext:
 	cid = 0
 	chip = '?'
 
+COMPORT_MIN_BAUD_RATE=340000
+COMPORT_DEF_BAUD_RATE=921600
+USBCOMPORT_BAD_BAUD_RATE=700000
+
+ext = floader_ext()
+
+debug = False
+bit8mask = 0x20
+
 class FatalError(RuntimeError):
 	def __init__(self, message):
 		RuntimeError.__init__(self, message)
-
 	@staticmethod
 	def WithResult(message, result):
 		message += " (result was %s)" % hexify(result)
 		return FatalError(message)
-		
 def arg_auto_int(x):
 	return int(x, 0)
-
 def hex_dump(addr, blk):
 	print('%06x: ' % addr, end='')
 	for i in range(len(blk)):
@@ -60,124 +66,273 @@ def hex_dump(addr, blk):
 			print('%02x ' % blk[i], end='')
 	if len(blk) % 16 != 0:
 		print('')
-
-def sws_code_blk(blk):
+# encode data (blk) into 10-bit swire words 
+def sws_encode_blk(blk):
 	pkt=[]
-	d = bytearray([0xe8,0xef,0xef,0xef,0xef])
+	d = bytearray(10) # word swire 10 bits
+	d[0] = 0x80 # start bit byte cmd swire = 1
 	for el in blk:
-		if (el & 0x80) != 0:
-			d[0] &= 0x0f
-		if (el & 0x40) != 0:
-			d[1] &= 0xe8
-		if (el & 0x20) != 0:
-			d[1] &= 0x0f
-		if (el & 0x10) != 0:
-			d[2] &= 0xe8
-		if (el & 0x08) != 0:
-			d[2] &= 0x0f
-		if (el & 0x04) != 0:
-			d[3] &= 0xe8
-		if (el & 0x02) != 0:
-			d[3] &= 0x0f
-		if (el & 0x01) != 0:
-			d[4] &= 0xe8
+		m = 0x80 # mask bit
+		idx = 1
+		while m != 0:
+			if (el & m) != 0:
+				d[idx] = 0x80
+			else:
+				d[idx] = 0xfe
+			idx += 1
+			m >>= 1
+		d[9] = 0xfe # stop bit swire = 0
 		pkt += d 
-		d = bytearray([0xef,0xef,0xef,0xef,0xef])
+		d[0] = 0xfe # start bit next byte swire = 0 
 	return pkt
-def sws_code_blk_variant2(blk):
-	pkt=[]
-	d = bytearray([0xd8,0xdf,0xdf,0xdf,0xdf])
-	for el in blk:
-		if (el & 0x80) != 0:
-			d[0] &= 0x1f
-		if (el & 0x40) != 0:
-			d[1] &= 0xf8
-		if (el & 0x20) != 0:
-			d[1] &= 0x1f
-		if (el & 0x10) != 0:
-			d[2] &= 0xf8
-		if (el & 0x08) != 0:
-			d[2] &= 0x1f
-		if (el & 0x04) != 0:
-			d[3] &= 0xf8
-		if (el & 0x02) != 0:
-			d[3] &= 0x1f
-		if (el & 0x01) != 0:
-			d[4] &= 0xf8
-		pkt += d 
-		d = bytearray([0xdf,0xdf,0xdf,0xdf,0xdf])
-	return pkt
+# decode 9 bit swire response to byte (blk)
 def sws_decode_blk(blk):
 	if (len(blk) == 9) and ((blk[8] & 0xfe) == 0xfe):
+		bitmask = bit8mask
 		data = 0;
-		for i in range(8):
+		for el in range(8):
 			data <<= 1
-			if (blk[i] & 0x10) == 0:
+			if (blk[el] & bitmask) == 0:
 				data |= 1
+			bitmask = 0x10
 		#print('0x%02x' % data)
 		return data
 	#print('Error blk:', blk)
 	return None
+# encode a part of the read-by-address command (before the data read start bit) into 10-bit swire words
 def sws_rd_addr(addr):
-	return sws_code_blk(bytearray([0x5a, (addr>>16)&0xff, (addr>>8)&0xff, addr & 0xff, 0x80]))
+	return sws_encode_blk(bytearray([0x5a, (addr>>16)&0xff, (addr>>8)&0xff, addr & 0xff, 0x80]))
+# encode command stop into 10-bit swire words
 def sws_code_end():
-	return sws_code_blk([0xff])
+	return sws_encode_blk([0xff])
+# encode the command for writing data into 10-bit swire words
 def sws_wr_addr(addr, data):
-	return sws_code_blk(bytearray([0x5a, (addr>>16)&0xff, (addr>>8)&0xff, addr & 0xff, 0x00]) + bytearray(data)) + sws_code_blk([0xff])
-def sws_read_dword(serialPort, addr):
-	blk = sws_read_blk(serialPort, addr, 4)
-	if blk != None:
-		return blk[0]+(blk[1]<<8)+(blk[2]<<16)+(blk[3]<<24)
-		#return struct.unpack('<I', bytearray(blk))
-	return None
-def sws_read_blk(serialPort, addr, size):
+	return sws_encode_blk(bytearray([0x5a, (addr>>16)&0xff, (addr>>8)&0xff, addr & 0xff, 0x00]) + bytearray(data)) + sws_encode_blk([0xff])
+# send block to USB-COM
+def wr_usbcom_blk(serialPort, blk):
+	# USB-COM chips throttle the stream into blocks at high speed!
+	if serialPort.baudrate > USBCOMPORT_BAD_BAUD_RATE:
+		i = 0
+		s = 60
+		l = len(blk)
+		while i < l:
+			if l - i < s:
+				s = l - i
+			i += serialPort.write(blk[i:i+s])
+		return i
+	return serialPort.write(blk)
+# send and receive block to USB-COM
+def	rd_wr_usbcom_blk(serialPort, blk):
+	i = wr_usbcom_blk(serialPort, blk)
+	return i == len(serialPort.read(i))
+# send swire command write to USB-COM
+def sws_wr_addr_usbcom(serialPort, addr, data):
+	return wr_usbcom_blk(serialPort, sws_wr_addr(addr, data))
+# send and receive swire command write to USB-COM  
+def rd_sws_wr_addr_usbcom(serialPort, addr, data):
+	i = wr_usbcom_blk(serialPort, sws_wr_addr(addr, data))
+	return i == len(serialPort.read(i))
+# send and receive swire command read to USB-COM
+def sws_read_data(serialPort, addr, size):
 	# A serialPort.timeout must be set !
-	serialPort.timeout = 0.01
+	serialPort.timeout = 0.05
 	# send addr and flag read
-	serialPort.read(serialPort.write(sws_rd_addr(addr)))
-	out = []
+	rd_wr_usbcom_blk(serialPort, sws_rd_addr(addr))
+	out=[]
+	# read size bytes
 	for i in range(size):
-		# start read data
-		serialPort.write([0xff])
-		# read 9 bits data
-		x = sws_decode_blk(serialPort.read(9))
+		# send bit start read byte
+		serialPort.write([0xfe])
+		# read 9 bits swire, decode read byte
+		blk = serialPort.read(9)
+		# Added retry reading for Prolific PL-2303HX and ...
+		if len(blk) < 9:
+			blk += serialPort.read(9-len(blk))
+		x = sws_decode_blk(blk)
 		if x != None:
 			out += [x]
 		else:
-			serialPort.read(serialPort.write(sws_code_end()))
+			if debug:
+				print('\r\nDebug: read swire byte:')
+				hex_dump(addr+i, blk)
+			# send stop read
+			rd_wr_usbcom_blk(serialPort, sws_code_end())
 			out = None
 			break
-	# stop read
-	serialPort.read(serialPort.write(sws_code_end()))
+	# send stop read
+	rd_wr_usbcom_blk(serialPort, sws_code_end())
 	return out
+def sws_read_dword(serialPort, addr):
+	blk = sws_read_data(serialPort, addr, 4)
+	if blk != None:
+		#return struct.unpack('<I', bytearray(blk))
+		return blk[0]+(blk[1]<<8)+(blk[2]<<16)+(blk[3]<<24)
+	return None
+# set sws speed according to clk frequency and serialPort baud
 def set_sws_speed(serialPort, clk):
 	#--------------------------------
 	# Set register[0x00b2]
-	swsbaud = int(round(clk*2/serialPort.baudrate))
-	byteSent = serialPort.write(sws_wr_addr(0x00b2, [swsbaud]))
 	print('SWire speed for CLK %.1f MHz... ' % (clk/1000000), end='')
+	swsdiv = int(round(clk*2/serialPort.baudrate))
+	if swsdiv > 0x7f:
+		print('Low UART baud rate!')
+		return False
+	byteSent = sws_wr_addr_usbcom(serialPort, 0x00b2, [swsdiv])
 	# print('Test SWM/SWS %d/%d baud...' % (int(serialPort.baudrate/5),int(clk/5/swsbaud)))
 	read = serialPort.read(byteSent)
 	if len(read) != byteSent:
-		print('Error: Wrong RX-TX connection!')
+		if serialPort.baudrate > USBCOMPORT_BAD_BAUD_RATE and byteSent > 64 and len(read) >= 64 and len(read) < byteSent:
+			print('\n\r!!!!!!!!!!!!!!!!!!!BAD USB-UART Chip!!!!!!!!!!!!!!!!!!!')
+			print('UART Output:')
+			hex_dump(0,sws_wr_addr(0x00b2, [swsdiv]))
+			print('UART Input:')
+			hex_dump(0,read)
+			print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+			return False
+		print('\n\rError: Wrong RX-TX connection!')
 		return False
 	#--------------------------------
 	# Test read register[0x00b2]
-	x = sws_read_blk(serialPort, 0x00b2, 1)
+	x = sws_read_data(serialPort, 0x00b2, 1)
 	#print(x)
-	if x != None and x[0] == swsbaud:
+	if x != None and x[0] == swsdiv:
 		print('ok.')
-		print('SWM/SWS %d/%d bits/s' % (int(serialPort.baudrate/5),int(clk/5/swsbaud)))
-		#print('Chip CLK %d MHz, regs[0x0b2]=0x%02x' % (clk/1000000, swsbaud))
-		#print('regs[0x0b2]:0x%02x' % x[0])
+		if debug:
+			print('Debug: UART-SWS %d baud. SW-CLK ~%.1f MHz' % (int(serialPort.baudrate/10), serialPort.baudrate*swsdiv/2000000))
+			print('Debug: swdiv = 0x%02x' % (swsdiv))
 		return True
 	#--------------------------------
 	# Set default register[0x00b2]
-	serialPort.read(serialPort.write(sws_wr_addr(0x00b2, 0x05)))
+	rd_sws_wr_addr_usbcom(serialPort, 0x00b2, 0x05)
 	print('no')
 	return False
+# auto set sws speed according to serialport baud
+def set_sws_auto_speed(serialPort):
+	#---------------------------------------------------
+	# swsbaud = Fclk/5/register[0x00b2]
+	# register[0x00b2] = Fclk/5/swsbaud
+	# swsbaud = serialPort.baudrate/10 
+	# register[0x00b2] = Fclk*2/serialPort.baudrate
+	# Fclk = 16000000..48000000 Hz
+	# serialPort.baudrate = 460800..3000000 bits/s
+	# register[0x00b2] = swsdiv = 10..208
+	#---------------------------------------------------
+	serialPort.timeout = 0.05 # A serialPort.timeout must be set !
+	if debug:
+		swsdiv_def = int(round(24000000*2/serialPort.baudrate))
+		print('Debug: default swdiv for 24 MHz = %d (0x%02x)' % (swsdiv_def, swsdiv_def))
+	swsdiv = int(round(16000000*2/serialPort.baudrate))
+	if swsdiv > 0x7f:
+		print('Low UART baud rate!')
+		return False
+	swsdiv_max = int(round(48000000*2/serialPort.baudrate))
+	#bit8m = (bit8mask + (bit8mask<<1) + (bit8mask<<2))&0xff
+	bit8m = ((~(bit8mask-1))<<1)&0xff
+	while swsdiv <= swsdiv_max:
+		# register[0x00b2] = swsdiv
+		rd_sws_wr_addr_usbcom(serialPort, 0x00b2, [swsdiv])
+		# send addr and flag read
+		rd_wr_usbcom_blk(serialPort, sws_rd_addr(0x00b2))
+		# start read data
+		serialPort.write([0xfe])
+		# read 9 bits data
+		blk = serialPort.read(9)
+		# Added retry reading for Prolific PL-2303HX and ...
+		if len(blk) < 9:
+			blk += serialPort.read(9-len(blk))
+		# send stop read
+		rd_wr_usbcom_blk(serialPort, sws_code_end())
+		if debug:
+			print('Debug (read data):')
+			hex_dump(swsdiv, blk)
+		if len(blk) == 9 and blk[8] == 0xfe:
+			cmp = sws_encode_blk([swsdiv])
+			if debug:
+				print('Debug (check data):')
+				hex_dump(swsdiv+0xccc00, sws_encode_blk([swsdiv]))
+			if (blk[0]&bit8m) == bit8m and blk[1] == cmp[2] and blk[2] == cmp[3] and blk[4] == cmp[5] and blk[6] == cmp[7] and blk[7] == cmp[8]:
+				print('UART-SWS %d baud. SW-CLK ~%.1f MHz(?)' % (int(serialPort.baudrate/10), serialPort.baudrate*swsdiv/2000000))
+				return True
+		swsdiv += 1
+		if swsdiv > 0x7f:
+			print('Low UART baud rate!')
+			break
+	#--------------------------------
+	# Set default register[0x00b2]
+	rd_sws_wr_addr_usbcom(serialPort, 0x00b2, 0x05)
+	return False
+def activate(serialPort, tact_ms):
+		#--------------------------------
+		# issue reset-to-bootloader:
+		# RTS = either RESET (active low = chip in reset)
+		# DTR = active low
+		print('Reset module (RTS low)...')
+		serialPort.setDTR(True)
+		serialPort.setRTS(True)
+		time.sleep(0.05)
+		serialPort.setDTR(False)
+		serialPort.setRTS(False)
+		#--------------------------------
+    	# Stop CPU|: [0x0602]=5
+		print('Activate (%d ms)...' % tact_ms)
+		sws_wr_addr_usbcom(serialPort, 0x06f, 0x20) # soft reset mcu
+		blk = sws_wr_addr(0x0602, 0x05)
+		if tact_ms > 0:
+			tact = tact_ms/1000.0
+			t1 = time.time()
+			while time.time()-t1 < tact:
+				for i in range(5):
+					wr_usbcom_blk(serialPort, blk)
+				serialPort.reset_input_buffer()
+		#--------------------------------
+		# Duplication with syncronization
+		time.sleep(0.01)
+		serialPort.reset_input_buffer()
+		rd_wr_usbcom_blk(serialPort, sws_code_end())
+		rd_wr_usbcom_blk(serialPort, blk)
+		time.sleep(0.01)
+		serialPort.reset_input_buffer()
 
+def ReadBlockFlash(serialPort, stream, faddr, size):
+	global ext
+	ext.cmd = 0x03
+	ext.count = 1024
+	ext.faddr = faddr
+	while size > 0:
+		if ext.count > size:
+			ext.count = size
+		print('\rRead from 0x%06x...' % ext.faddr, end = '')
+		ext.iack += 1
+		blk = struct.pack('<IIHHH', ext.faddr, ext.pbuf, ext.count, ext.cmd, ext.iack)
+		rd_sws_wr_addr_usbcom(serialPort, ext.addr, blk)
+		while ext.iack == ext.oack:
+			#(ext.faddr, ext.pbuf, ext.count, ext.cmd, ext.iack, ext.oack) = struct.unpack('<IIHHHH', bytearray(blk))
+			blk = sws_read_data(serialPort,ext.addr+14, 2)
+			if blk == None:
+				print(' Error')
+				return False
+			ext.oack = blk[0] | (blk[1]>>8)
+		blk = sws_read_data(serialPort, ext.pbuf, ext.count)
+		if blk == None:
+			print(' Error')
+			return False
+		stream.write(bytearray(blk));
+		#hex_dump(address, blk)
+		#print('ok', end='')
+		size -= ext.count
+		ext.faddr += ext.count
+	print('\r                               \r',  end = '')
+	return True
+#--------------------------------
+# Main()
 def main():
+	global ext
+	comport_def_name='COM1'
+	if platform == "linux" or platform == "linux2":
+		comport_def_name = '/dev/ttyS0'
+	#elif platform == "darwin":
+	#elif platform == "win32":	
+	#else:
 	parser = argparse.ArgumentParser(description='%s version %s' % (__progname__, __version__), prog=__filename__)
 	parser.add_argument(
 		'--port', '-p',
@@ -206,43 +361,47 @@ def main():
 		'--address','-a', 
 		help='Flash addres (default: 0))', 
 		type=arg_auto_int, 
-		default=0x40000)
+		default=0)
 	parser.add_argument(
 		'--size','-s', 
 		help='Size data (default: 524288)', 
 		type=arg_auto_int, 
-		default=256)
+		default=524288)
+	parser.add_argument(
+		'--debug','-d', 
+		help='Debug info', 
+		action="store_true")
 	
 	args = parser.parse_args()
+	global debug
+	debug = args.debug
+	global bit8mask
+	if args.baud > 1000000:
+		bit8mask = 0x40
+		if args.baud > 3000000:
+			bit8mask = 0x80
 	print('=======================================================')
 	print('%s version %s' % (__progname__, __version__))
 	print('-------------------------------------------------------')
-	if(args.baud < 460800):
-		print ('The minimum speed of the COM port is 460800 baud!')
+	if(args.baud < COMPORT_MIN_BAUD_RATE):
+		print ('The minimum speed of the COM port is %d baud!' % COMPORT_MIN_BAUD_RATE)
 		sys.exit(1)
-	print ('Open %s, %d baud...' % (args.port, 230400))
-	start_com_baud = args.baud
-	if args.tact != 0:
-		start_com_baud = 230400
-	#-------------------------------------------------------------
-	# USB-COM chips throttle the stream into blocks at high speed!
+	print ('Open %s, %d baud...' % (args.port, args.baud))
 	try:
-		serialPort = serial.Serial(args.port, start_com_baud, \
+		serialPort = serial.Serial(args.port, args.baud, \
 								   serial.EIGHTBITS,\
 								   serial.PARITY_NONE, \
 								   serial.STOPBITS_ONE)
 		serialPort.reset_input_buffer()
-		serialPort.setDTR(False)
-		serialPort.setRTS(False)
 #		serialPort.flushInput()
 #		serialPort.flushOutput()
 		serialPort.timeout = 0.05
-#		print('serialPort.timeout =', serialPort.timeout)
 	except:
-		print ('Error: Open %s, %d baud!' % (args.port, start_com_baud))
+		print ('Error: Open %s, %d baud!' % (args.port, args.baud))
 		sys.exit(1)
 	if args.tact != 0:
 		#--------------------------------
+		# Open floder file
 		try:
 			stream = open(args.file, 'rb')
 			size = os.path.getsize(args.file)
@@ -256,36 +415,9 @@ def main():
 			print('Error: File size = 0!')
 			sys.exit(3)
 		#--------------------------------
-		# issue reset-to-bootloader:
-		# RTS = either RESET (active low = chip in reset)
-		# DTR = active low
-		print('Reset module (RTS low)...')
-		serialPort.setDTR(True)
-		serialPort.setRTS(True)
-		time.sleep(0.05)
-		serialPort.setDTR(False)
-		serialPort.setRTS(False)
+		# activate
+		activate(serialPort, args.tact);
 
-		print('Activate (%d ms)...' % args.tact)
-		serialPort.write(sws_wr_addr(0x06f, 0x20)) # soft reset mcu
-		tact = args.tact/1000.0
-		#--------------------------------
-    	# Stop CPU|: [0x0602]=5
-		blk = sws_wr_addr(0x0602, 0x05)
-		serialPort.write(blk)
-		if args.tact != 0:
-			t1 = time.time()
-			while time.time()-t1 < tact:
-				for i in range(5):
-					serialPort.write(blk)
-				serialPort.reset_input_buffer()
-		#--------------------------------
-        # USB-COM chips throttle the stream into blocks at high speed!
-        # Duplication with syncronization
-		serialPort.reset_input_buffer()
-		serialPort.read(serialPort.write(sws_code_end()))
-		serialPort.read(serialPort.write(blk))
-		time.sleep(0.01)
 		#--------------------------------
 		# Load floader.bin
 		binWrite = 0
@@ -298,51 +430,39 @@ def main():
 			if not data: # end of stream
 				print('send: at EOF')
 				break
-			serialPort.read(serialPort.write(sws_wr_addr(addr, data)))	
+			sws_wr_addr_usbcom(serialPort, addr, data)	
 			binWrite += len(data)
 			addr += len(data)
 			size -= len(data)
+			serialPort.reset_input_buffer()
 		stream.close
 		print('\rBin bytes writen:', binWrite)
 		print('CPU go Start...')
-		serialPort.write(sws_wr_addr(0x0602, b'\x88')) # cpu go Start
+		sws_wr_addr_usbcom(serialPort, 0x0602, b'\x88') # cpu go Start
 		time.sleep(0.05)
 		serialPort.flushInput()
 		serialPort.flushOutput()
 		serialPort.reset_input_buffer()
 		serialPort.reset_output_buffer()
-	#--------------------------------------
-	#  Set the COM speed above 460800 baud
-	print('-------------------------------------------------------')
-	if start_com_baud != args.tact:
-		start_com_baud = args.baud
-		print ('ReOpen %s, %d baud...' % (args.port, start_com_baud))
-		serialPort.close()
 
-		try:
-			serialPort = serial.Serial(args.port, start_com_baud, \
-									   serial.EIGHTBITS,\
-									   serial.PARITY_NONE, \
-									   serial.STOPBITS_ONE)
-			serialPort.reset_input_buffer()
-			serialPort.setDTR(False)
-			serialPort.setRTS(False)
-			serialPort.timeout = 0.05
-		except:
-			print ('Error: Open %s, %d baud!' % (args.port, start_com_baud))
+	if args.clk == 0:
+		# auto speed
+		if not set_sws_auto_speed(serialPort):
+			print('Chip sleep? -> Use reset chip (RTS-RST): see option --tact')
 			sys.exit(1)
-	#--------------------------------
-	# Set SWS speed low
-	# SWS Speed = CLK/5/[0xb2] bits/s
-	if not set_sws_speed(serialPort, args.clk * 1000000):
-		if not set_sws_speed(serialPort, 16000000):
-			if not set_sws_speed(serialPort, 24000000):
-				if not set_sws_speed(serialPort, 32000000):
-					if not set_sws_speed(serialPort, 48000000):
-						print('Chip sleep? -> Use reset chip (RTS-RST): see option --tact')
-						sys.exit(1)
+	else:
+		# Set SWS Speed = CLK/5/[0xb2] bits/s 
+		if not set_sws_speed(serialPort, args.clk * 1000000):
+			if not set_sws_speed(serialPort, 16000000):
+				if not set_sws_speed(serialPort, 24000000):
+					if not set_sws_speed(serialPort, 32000000):
+						if not set_sws_speed(serialPort, 48000000):
+							print('Chip sleep? -> Use reset chip (RTS-RST): see option --tact')
+							sys.exit(1)
+
 	print('-------------------------------------------------------')
-	#print('Loader Connection...')
+	# print('Connection...')
+	serialPort.timeout = 0.05 # A serialPort.timeout must be set !
 	# test id floader
 	lid = sws_read_dword(serialPort, 0x40014)
 	if lid == None:
@@ -356,44 +476,38 @@ def main():
 	if pc == None:
 		print('Swire Error!')
 		sys.exit(1)
-	print('CPU PC: %08x' % pc)	
+	if debug:
+		print('CPU PC: %08x' % pc)	
 	if pc == 0:
 		print('Warning: CPU is in reset and stop state! Restart CPU...' )
-
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
-
-		serialPort.read(serialPort.write(sws_wr_addr(0x0602, [0x88]))) # cpu go
-
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
+		rd_sws_wr_addr_usbcom(serialPort,0x0602, [0x88]) # cpu go
 		time.sleep(0.03)
-		print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
+		if debug:
+			print('CPU pc: %08x' % sws_read_dword(serialPort, 0x06bc))	
 	# Read floader config
-	ext = floader_ext()
+	#ext = floader_ext()
 	ext.addr = sws_read_dword(serialPort, 0x40004)
 	#print('ext.addr: %08x' % ext.addr)	
 	if ext.addr == None or ext.addr < 0x840000 or  ext.addr > 0x84fff0:
 		print('Floder format or download error!')
 		sys.exit(1)
-	blk = sws_read_blk(serialPort, ext.addr, 16)
+	blk = sws_read_data(serialPort, ext.addr, 16)
 	if blk == None:
 		print('Swire Error!')
 		sys.exit(1)
 	#hex_dump(ext.addr, blk)
 	(ext.faddr, ext.pbuf, ext.count, ext.cmd, ext.iack, ext.oack) = struct.unpack('<IIHHHH', bytearray(blk))
-	#print('ext.faddr: %08x' % ext.faddr)	
-	#print('ext.pbuf: %08x' % ext.pbuf)	
-	#print('ext.cmd: %04x' % ext.cmd)	
-	#print('ext.iack: %04x' % ext.iack)
-	#print('ext.oack: %04x' % ext.oack)
+	if debug:
+		print('ext.faddr: %08x' % ext.faddr)	
+		print('ext.pbuf: %08x' % ext.pbuf)	
+		print('ext.count: %04x' % ext.count)	
+		print('ext.cmd: %04x' % ext.cmd)	
+		print('ext.iack: %04x' % ext.iack)
+		print('ext.oack: %04x' % ext.oack)
 	if ext.oack == 0 or ext.oack != ext.iack or ext.cmd != 0x9f:
 		print("Warning: Floader format error or it doesn't work!")
 	ext.ver = ext.iack;
-	print('Floader id: %X, ver: %x.%x.%x.%x, bufsize: %d' % (lid, (ext.ver>>12)&0x0f,(ext.ver>>8)&0x0f,(ext.ver>>4)&0x0f, ext.ver&0x0f, ext.pbuf))
+	print('Floader id: %X, ver: %x.%x.%x.%x, bufsize: %d' % (lid, (ext.ver>>12)&0x0f,(ext.ver>>8)&0x0f,(ext.ver>>4)&0x0f, ext.ver&0x0f, ext.count))
 	ext.cid = sws_read_dword(serialPort, 0x07c)
 	if ext.cid == None:
 		print('Swire Error!')
@@ -411,7 +525,8 @@ def main():
 	if pc == None:
 		print('Swire Error!')
 		sys.exit(1)
-	print('CPU PC: %08x' % pc)	
+	if debug:
+		print('CPU PC: %08x' % pc)	
 	if pc == 0:
 		print('CPU PC: %08x - CPU Not Runing!' % pc)	
 		sys.exit(1)
@@ -419,26 +534,18 @@ def main():
 	# Info read swire addres[size]
 	print('-------------------------------------------------------')
 	#blk = sws_read_blk(serialPort, args.address, args.size)
-	print('Read faddr 0x%06x, size %d ...' % (args.address, args.size))   
-	ext.faddr = args.address
-	ext.count = args.size
-	ext.cmd = 0x03
-	ext.iack += 1
-	blk = struct.pack('<IIHHH', ext.faddr, ext.pbuf, ext.count, ext.cmd, ext.iack)
-	serialPort.read(serialPort.write(sws_wr_addr(ext.addr, blk)))
-	while ext.iack == ext.oack:
-		#(ext.faddr, ext.pbuf, ext.count, ext.cmd, ext.iack, ext.oack) = struct.unpack('<IIHHHH', bytearray(blk))
-		blk = sws_read_blk(serialPort,ext.addr+14, 2)
-		if blk == None:
-			print('Swire Error!')
-			sys.exit(1)
-		ext.oack = blk[0] | (blk[1]>>8)
-	blk =  sws_read_blk(serialPort, ext.pbuf, args.size)
-	if blk == None:
-		print('Swire Error!')
-		sys.exit(1)
-	addr = args.address
-	hex_dump(args.address, blk)
+	print('Read Flash from 0x%06x to 0x%06x...' % (args.address, args.address+args.size))
+	print('Outfile: %s' % 'out.bin')
+	try:
+		stream = open('out.bin', 'wb')
+	except:
+		print('Error: Not open Outfile file <%s>!' % 'out.bin')
+		sys.exit(2)
+	if not ReadBlockFlash(serialPort, stream, args.address, args.size):
+		stream.close
+		serialPort.close
+		sys.exit(5)
+	stream.close
 	print('-------------------------------------------------------')
 	print('Done!')
 	sys.exit(0)

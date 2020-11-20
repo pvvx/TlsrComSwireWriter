@@ -40,7 +40,10 @@ Added ComSwireReader for TLSR825x chips:
       --size SIZE, -s SIZE  Size data (default: 4)
         usage: ComSwireReader [-h] [--port PORT] [--tact TACT] [--clk CLK]
                           [--baud BAUD] [--address ADDRESS] [--size SIZE]
-    
+
+Warning: FTDI USB-COM chips don't work!
+
+Prolific PL-2303HX, ...
 
 #### Samples:
 > **Read SRAM:** python.exe ComSwireReader825x.py -p COM11 -t 70 -c 0 -a 0x40000 -s 256
