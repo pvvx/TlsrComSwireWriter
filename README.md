@@ -54,7 +54,6 @@ Prolific PL-2303HX, ...
 #### Samples:
 > **Write full flash:** python.exe TLSR825xComFlasher.py -p COM3 -t 70 wf 0 Original_full_flash_Xiaomi_LYWSD03MMC.bin
 ```
-E:\Telink\git\ATC_MiThermometer>
 =======================================================
 TLSR825x Flasher version 00.00.02
 -------------------------------------------------------
