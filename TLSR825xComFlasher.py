@@ -17,7 +17,7 @@ import io
 import serial.tools.list_ports
 
 __progname__ = 'TLSR825x Flasher'
-__version__ = "00.00.02"
+__version__ = "00.00.03"
 
 COMPORT_MIN_BAUD_RATE=340000
 COMPORT_DEF_BAUD_RATE=921600
@@ -307,6 +307,7 @@ def FlashReadBlock(serialPort, stream, offset = 0, size = 0x80000):
 	print('\r                               \r',  end = '')
 	return True
 def FlashReady(serialPort, count = 33):
+	time.sleep(0.05)
 	serialPort.reset_input_buffer()
 	for _ in range(count):
 		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x00]))  # SPI set cns low
@@ -314,7 +315,7 @@ def FlashReady(serialPort, count = 33):
 		data = sws_read_data(serialPort, 0x0c)
 		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x01]))  # SPI set cns high
 		if data == None:
-			print('\rError Read Flash Status!     ')
+			print('\rError Read Flash Status! (%d)  ' %(_))
 			return False
 		if (data[0] & 0x01) == 0:
 			return True
