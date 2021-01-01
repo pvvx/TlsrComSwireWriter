@@ -296,7 +296,7 @@ def activate(serialPort, tact_ms):
 
 def FlashReadBlock(serialPort, stream, offset = 0, size = 0x80000):
 	offset &= 0x00ffffff
-	rdsize = 0x10
+	rdsize = 0x100
 	while size > 0:
 		if rdsize > size:
 			rdsize = size
@@ -356,7 +356,7 @@ def FlashEraseSectors(serialPort, offset = 0, size = 1):
 		FlashWriteEnable(serialPort)
 		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x00]))  # cns low
 		rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([0x20]))  # Flash cmd erase sector
-		rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([(offset >> 16) & 0xffff]))  # Faddr hi
+		rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([(offset >> 16) & 0xff]))  # Faddr hi
 		rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([(offset >> 8) & 0xff]))  # Faddr mi
 		rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([offset & 0xff]))  # Faddr lo
 		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x01]))  # cns high
