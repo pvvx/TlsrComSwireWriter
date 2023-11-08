@@ -47,9 +47,9 @@ Added TLSR825xComFlasher:
 	  -d, --debug           Debug info
 
 
-Warning: FTDI USB-COM chips don't work!
-
-Prolific PL-2303HX, ...
+Warning: 
+- Does not work on USB-COM adapters that have LEDs on at the RX input.
+- Does not work on USB-COM adapters that have FTDI chip
 
 #### Samples:
 > **Write full flash:** python.exe TLSR825xComFlasher.py -p COM3 -t 70 wf 0 Original_full_flash_Xiaomi_LYWSD03MMC.bin

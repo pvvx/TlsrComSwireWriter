@@ -17,7 +17,7 @@ import io
 import serial.tools.list_ports
 
 __progname__ = 'TLSR825x Flasher'
-__version__ = "00.00.04"
+__version__ = "00.00.05"
 
 COMPORT_MIN_BAUD_RATE=340000
 COMPORT_DEF_BAUD_RATE=921600
@@ -335,6 +335,13 @@ def FlashWriteEnable(serialPort):
 	rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x00]))  # cns low
 	rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([0x06]))  # Flash cmd write enable
 	rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x01]))  # cns high
+def FlashUnlock(serialPort):
+	FlashWriteEnable(serialPort)
+	rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x00]))  # cns low
+	rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([0x01]))  # Flash cmd wr status
+	rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([0x00]))  # data: 0
+	rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x01]))  # cns high
+	return FlashReady(serialPort)
 def FlashWriteAddr(serialPort, addr, data):
 	FlashWriteEnable(serialPort)
 	rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x00]))  # cns low
@@ -482,7 +489,7 @@ def main():
 	try:
 		serialPort = serial.Serial(args.port,args.baud)
 		serialPort.reset_input_buffer()
-		serialPort.timeout = 0.01
+		serialPort.timeout = 0.5
 	except:
 		print ('Error: Open %s, %d baud!' % (args.port, args.baud))
 		sys.exit(1)
@@ -532,6 +539,8 @@ def main():
 			print('Error: File size = %d!'% size)
 		else:
 			print('Write Flash data 0x%08x to 0x%08x...' % (offset, offset + size))
+			if not FlashUnlock():
+				sys.exit(1)
 			if not FlashWriteBlock(serialPort, stream, offset, size):
 				sys.exit(1)
 	elif args.operation == 'es':
@@ -539,10 +548,14 @@ def main():
 		size = (count * FLASH_SECTOR_SIZE)
 		offset = args.address & (0xffffff^(FLASH_SECTOR_SIZE-1))
 		print('Erase Flash %d sectors,\r\ndata from 0x%06x to 0x%06x...' % (count, offset, offset + size))
+		if not FlashUnlock():
+			sys.exit(1)
 		if not FlashEraseSectors(serialPort, offset, size):
 			sys.exit(1)
 	elif args.operation == 'ea':
 		print('Erase All Flash ...')
+		if not FlashUnlock():
+			sys.exit(1)
 		if not FlashEraseAll(serialPort):
 			print('Error Erase All Flash!')
 			sys.exit(1)
