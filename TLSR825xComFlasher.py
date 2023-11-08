@@ -539,7 +539,7 @@ def main():
 			print('Error: File size = %d!'% size)
 		else:
 			print('Write Flash data 0x%08x to 0x%08x...' % (offset, offset + size))
-			if not FlashUnlock():
+			if not FlashUnlock(serialPort):
 				sys.exit(1)
 			if not FlashWriteBlock(serialPort, stream, offset, size):
 				sys.exit(1)
@@ -548,13 +548,13 @@ def main():
 		size = (count * FLASH_SECTOR_SIZE)
 		offset = args.address & (0xffffff^(FLASH_SECTOR_SIZE-1))
 		print('Erase Flash %d sectors,\r\ndata from 0x%06x to 0x%06x...' % (count, offset, offset + size))
-		if not FlashUnlock():
+		if not FlashUnlock(serialPort):
 			sys.exit(1)
 		if not FlashEraseSectors(serialPort, offset, size):
 			sys.exit(1)
 	elif args.operation == 'ea':
 		print('Erase All Flash ...')
-		if not FlashUnlock():
+		if not FlashUnlock(serialPort):
 			sys.exit(1)
 		if not FlashEraseAll(serialPort):
 			print('Error Erase All Flash!')
