@@ -8,7 +8,12 @@ Using only the COM port, downloads and runs the program in SRAM for TLSR826x or 
 
 ![SCH](https://github.com/pvvx/TlsrComSwireWriter/blob/master/schematicc.gif)
 
-COM-RTS connect to Chip RST or Vcc.
+Don't forget to connect GND.
+
+If the module does not have a RESET pin from the chip, then the RTS signal from the COM port can be connected as the module power supply - connect it to +3.3 V of the module.
+
+If the module has a RESET pin, then it is advisable to connect the module power supply to +3.3 V, and connect RESET to RTS.
+
 
 
     usage: ComSwireWriter [-h] [--port PORT] [--tact TACT] [--file FILE] [--baud BAUD]
