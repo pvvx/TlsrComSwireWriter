@@ -17,7 +17,7 @@ import io
 import serial.tools.list_ports
 
 __progname__ = 'TLSR825x Flasher'
-__version__ = "00.00.05"
+__version__ = "29.11.24"
 
 COMPORT_MIN_BAUD_RATE=340000
 COMPORT_DEF_BAUD_RATE=921600
@@ -369,6 +369,7 @@ def FlashEraseSectors(serialPort, offset = 0, size = 1):
 		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x01]))  # cns high
 		offset += FLASH_SECTOR_SIZE
 		size -= FLASH_SECTOR_SIZE
+		time.sleep(0.08)
 		if not FlashReady(serialPort):
 			return False
 	print('\r                               \r',  end = '')
@@ -466,6 +467,12 @@ def main():
 	parser_burn_flash.add_argument('address', help='Start address', type=arg_auto_int)
 	parser_burn_flash.add_argument('filename', help='Name of binary file')
 
+	parser_write_flash = subparsers.add_parser(
+		'we',
+		help='Write file to Flash without sectors erases')
+	parser_write_flash.add_argument('address', help='Start address', type=arg_auto_int)
+	parser_write_flash.add_argument('filename', help='Name of binary file')
+
 	parser_erase_sec_flash = subparsers.add_parser(
 		'es',
 		help='Erase Region (sectors) of Flash')
@@ -542,6 +549,23 @@ def main():
 			if not FlashUnlock(serialPort):
 				sys.exit(1)
 			if not FlashWriteBlock(serialPort, stream, offset, size):
+				sys.exit(1)
+	elif args.operation == 'we':
+		offset = args.address & 0x00ffffff
+		print('Inputfile: %s' % (args.filename))
+		try:
+			stream = open(args.filename, 'rb')
+			size = os.path.getsize(args.filename)
+		except:
+			print('Error: Not open input file <%s>!' % args.fldr)
+			sys.exit(1)
+		if size < 1:
+			print('Error: File size = %d!'% size)
+		else:
+			print('Write Flash data 0x%08x to 0x%08x...' % (offset, offset + size))
+			if not FlashUnlock(serialPort):
+				sys.exit(1)
+			if not FlashWriteBlock(serialPort, stream, offset, size, False):
 				sys.exit(1)
 	elif args.operation == 'es':
 		count = int((args.size + FLASH_SECTOR_SIZE - 1) / FLASH_SECTOR_SIZE)
