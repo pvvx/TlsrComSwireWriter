@@ -54,16 +54,22 @@ def hex_dump(addr, blk):
 		print('')
 # encode data (blk) into 10-bit swire words
 def drain_input(serialPort, wait=0.008):
-	"""macOS: tcflush() non svuota cio' che e' ancora nel tubo USB (misurati 69-86
-	byte sopravvissuti). Si aspetta, si svuota, poi si drena fino al silenzio."""
 	time.sleep(wait)
 	serialPort.reset_input_buffer()
-	to = serialPort.timeout
-	serialPort.timeout = 0.01
-	while True:
-		if not serialPort.read(4096):
-			break
-	serialPort.timeout = to
+	while serialPort.in_waiting:
+		serialPort.read(serialPort.in_waiting)
+		time.sleep(0.001)
+
+def read_exact(serialPort, n, timeout=None):
+	if timeout is None:
+		timeout = max(0.15, n / 40000.0 + 0.1)
+	rec = bytearray()
+	t_end = time.time() + timeout
+	while len(rec) < n and time.time() < t_end:
+		chunk = serialPort.read(n - len(rec))
+		if chunk:
+			rec.extend(chunk)
+	return rec
 
 def sws_encode_blk(blk):
 	pkt=[]
@@ -124,16 +130,16 @@ def wr_usbcom_blk(serialPort, blk):
 		return i
 	return serialPort.write(blk)
 # send and receive block to USB-COM
-def	rd_wr_usbcom_blk(serialPort, blk):
+def rd_wr_usbcom_blk(serialPort, blk):
 	i = wr_usbcom_blk(serialPort, blk)
-	return i == len(serialPort.read(i))
+	return i == len(read_exact(serialPort, i))
 # send swire command write to USB-COM
 def sws_wr_addr_usbcom(serialPort, addr, data):
 	return wr_usbcom_blk(serialPort, sws_wr_addr(addr, data))
 # send and receive swire command write to USB-COM
 def rd_sws_wr_addr_usbcom(serialPort, addr, data):
 	i = wr_usbcom_blk(serialPort, sws_wr_addr(addr, data))
-	return i == len(serialPort.read(i))
+	return i == len(read_exact(serialPort, i))
 # send swire data in fifo mode
 def rd_sws_fifo_wr_usbcom(serialPort, addr, data):
 	rd_sws_wr_addr_usbcom(serialPort, 0x00b3, bytearray([0x80])) # [0xb3]=0x80 ext.SWS into fifo mode
@@ -141,7 +147,7 @@ def rd_sws_fifo_wr_usbcom(serialPort, addr, data):
 	rd_sws_wr_addr_usbcom(serialPort, 0x00b3, bytearray([0x00])) # [0xb3]=0x00 ext.SWS into normal(ram) mode
 # send and receive swire command read to USB-COM
 def sws_read_data(serialPort, addr, size = 1):
-	time.sleep(0.05)
+	time.sleep(0.01)
 	drain_input(serialPort)
 	# send addr and flag read
 	rd_wr_usbcom_blk(serialPort, sws_rd_addr(addr))
@@ -151,13 +157,18 @@ def sws_read_data(serialPort, addr, size = 1):
 		# send bit start read byte
 		serialPort.write([0xfe])
 		# read 9 bits swire, decode read byte
-		blk = serialPort.read(9)
-		# macOS: il driver spezza la consegna. Si completa a ESATTAMENTE 9 byte,
-		# mai di piu': sws_decode_blk() scarta un blocco di lunghezza diversa.
-		t_end = time.time() + 0.2
-		while len(blk) < 9 and time.time() < t_end:
-			blk += serialPort.read(9-len(blk))
+		blk = read_exact(serialPort, 9, timeout=0.1)
 		x = sws_decode_blk(blk)
+		if x is None:
+			# Auto-resync: if an echo or framing jitter shifted the window, slide up to 8 bytes
+			for _ in range(8):
+				extra = serialPort.read(1)
+				if not extra:
+					break
+				blk = blk[1:] + extra
+				x = sws_decode_blk(blk)
+				if x is not None:
+					break
 		if x != None:
 			out += [x]
 		else:
@@ -182,7 +193,7 @@ def set_sws_speed(serialPort, clk):
 		return False
 	byteSent = sws_wr_addr_usbcom(serialPort, 0x00b2, [swsdiv])
 	# print('Test SWM/SWS %d/%d baud...' % (int(serialPort.baudrate/5),int(clk/5/swsbaud)))
-	read = serialPort.read(byteSent)
+	read = read_exact(serialPort, byteSent)
 	if len(read) != byteSent:
 		if serialPort.baudrate > USBCOMPORT_BAD_BAUD_RATE and byteSent > 64 and len(read) >= 64 and len(read) < byteSent:
 			print('\n\r!!!!!!!!!!!!!!!!!!!BAD USB-UART Chip!!!!!!!!!!!!!!!!!!!')
@@ -238,11 +249,7 @@ def set_sws_auto_speed(serialPort):
 		rd_wr_usbcom_blk(serialPort, sws_rd_addr(0x00b2))
 		# start read data
 		serialPort.write([0xfe])
-		# read 9 bits data
-		blk = serialPort.read(9)
-		# Added retry reading for Prolific PL-2303HX and ...
-		if len(blk) < 9:
-			blk += serialPort.read(9-len(blk))
+		blk = read_exact(serialPort, 9, timeout=0.1)
 		# send stop read
 		rd_wr_usbcom_blk(serialPort, sws_code_end())
 		if debug:
@@ -310,27 +317,37 @@ def activate(serialPort, tact_ms):
 
 def FlashReadBlock(serialPort, stream, offset = 0, size = 0x80000):
 	offset &= 0x00ffffff
-	rdsize = 0x100
+	total_size = size
+	start_offset = offset
+	rdsize = 0x40
 	while size > 0:
 		if rdsize > size:
 			rdsize = size
-		print('\rRead from 0x%06x...' % offset, end = '')
-		rd_sws_wr_addr_usbcom(serialPort, 0x0b3, bytearray([0x80])) # [0xb3]=0x80 ext.SWS into fifo mode
-		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x00]))  # SPI set cns low
-		# send all data to one register (not increment address - fifo mode), cmd flash rd, addr, + launch first read
-		rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([0x03, (offset >> 16) & 0xffff, (offset >> 8) & 0xff, offset & 0xff, 0]))
-		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x0A]))  # [0x0d]=0x0a SPI set auto read mode & cns low
-		# read all data from one register (not increment address - fifo mode)
-		data = sws_read_data(serialPort, 0x0c, rdsize)
-		rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x01]))  # SPI set cns high
-		rd_sws_wr_addr_usbcom(serialPort, 0x0b3, bytearray([0x00])) # [0xb3]=0x00 ext.SWS into normal(ram) mode
-		if data == None or len(data) != rdsize:
+		pct = int((offset - start_offset) * 100 / total_size)
+		print('\rRead from 0x%06x (%d%%)...' % (offset, pct), end = '', flush=True)
+		success = False
+		for attempt in range(3):
+			rd_sws_wr_addr_usbcom(serialPort, 0x0b3, bytearray([0x80])) # [0xb3]=0x80 ext.SWS into fifo mode
+			rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x00]))  # SPI set cns low
+			# send all data to one register (not increment address - fifo mode), cmd flash rd, addr, + launch first read
+			rd_sws_wr_addr_usbcom(serialPort, 0x0c, bytearray([0x03, (offset >> 16) & 0xffff, (offset >> 8) & 0xff, offset & 0xff, 0]))
+			rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x0A]))  # [0x0d]=0x0a SPI set auto read mode & cns low
+			# read all data from one register (not increment address - fifo mode)
+			data = sws_read_data(serialPort, 0x0c, rdsize)
+			rd_sws_wr_addr_usbcom(serialPort, 0x0d, bytearray([0x01]))  # SPI set cns high
+			rd_sws_wr_addr_usbcom(serialPort, 0x0b3, bytearray([0x00])) # [0xb3]=0x00 ext.SWS into normal(ram) mode
+			if data != None and len(data) == rdsize:
+				success = True
+				break
+			time.sleep(0.02)
+			drain_input(serialPort)
+		if not success:
 			print('\rError Read Flash data at 0x%06x! ' % offset)
 			return False
 		stream.write(bytearray(data))
 		size -= rdsize
 		offset += rdsize
-	print('\r                               \r',  end = '')
+	print('\rRead Flash 0x%06x bytes OK!         ' % total_size)
 	return True
 def FlashReady(serialPort, count = 33):
 	for _ in range(count):
@@ -390,6 +407,8 @@ def FlashEraseSectors(serialPort, offset = 0, size = 1):
 	return True
 def FlashWriteBlock(serialPort, stream, offset = 0, size = 0, erase = True):
 	wrsize = 0x100
+	total_size = size
+	start_offset = offset
 	if erase and (offset & (FLASH_SECTOR_SIZE-1)) != 0:
 		erasec = offset & (0xffffff^(FLASH_SECTOR_SIZE-1))
 	else:
@@ -397,6 +416,7 @@ def FlashWriteBlock(serialPort, stream, offset = 0, size = 0, erase = True):
 	fa = 0
 	while size > 0:
 		offset &= 0xffffff
+		pct = int((offset - start_offset) * 100 / total_size)
 		if erase:
 			wrsec = offset & (0xffffff^(FLASH_SECTOR_SIZE-1))
 			if erasec != wrsec:
@@ -412,15 +432,15 @@ def FlashWriteBlock(serialPort, stream, offset = 0, size = 0, erase = True):
 			return False
 		for e in data:
 			if e != 0xff:
-				print('\rWrite to 0x%06x...' % offset, end = '')
+				print('\rWrite to 0x%06x (%d%%)...' % (offset, pct), end = '', flush=True)
 				if not FlashWriteAddr(serialPort, offset, data):
 					print('\rError write sector at 0x%06x!' % offset)
 					return False
 				break
 		offset += wrsize
 		size -= wrsize
-		fa + wrsize
-	print('\r                               \r',  end = '')
+		fa += wrsize
+	print('\rWrite Flash 0x%06x bytes OK!         ' % total_size)
 	return True
 
 def main():
